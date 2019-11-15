@@ -1,0 +1,282 @@
+CentOS 7 Initialization
+************************
+	
+$ scp /etc/hosts nodeA:/etc/ 
+$ scp /etc/hosts nodeB:/etc/ 
+
+$ yum -y install pacemaker corosync fence-agents-all fence-agents-virsh fence-virt  pacemaker-remote pcs
+$ echo hacluster | passwd --stdin hacluster
+$ systemctl enable pcsd.service
+$ systemctl start pcsd.service
+$ systemctl is-active pcsd.service
+$ pcs cluster auth node01 node02 ….
+$ pcs cluster setup --start --name ha-kvm node01 node02 …
+$ pcs cluster enable --all
+
+# 2 nodes cluster need to disable quorum
+$ pcs property set stonith-enabled=ture
+$ pcs property set no-quorum-policy=ignore
+
+Create fence
+*************
+
+$ pcs stonith create NodeB-fencing fence_ipmilan pcmk_host_list="NodeB" ipaddr="192.xx.xx.xx" login=ADMIN passwd=ADMIN lanplus=true power_wait=4 op monitor interval=60s
+
+# search fence device metadata
+$ stonith_admin -M -a fence_ipmilan
+
+# Fence the node
+$ stonith_admin --reboot nodename
+
+config fence level
+******************
+http://wiki.clusterlabs.org/wiki/Configure_Multiple_Fencing_Devices_Using_pcs
+
+Create resource
+***************
+
+# VIP
+$ pcs resource create ClusterIP ocf:heartbeat:IPaddr2 ip="192.xx.xx.xx" cidr_netmask=32 nic=eth0 op monitor interval=30s
+
+# kvm
+$ pcs resource create vm01 VirtualDomain hypervisor="qemu:///system" config="/xx/xx/vm01.xml"  meta remote-node="vm01"a
+
+# filesystem
+$ pcs resource create Lustre-mgs ocf:heartbeat:Filesystem device="/dev/sdb1" directory="/mnt" fstype="ext4"
+
+# NFS
+$ pcs resource create WebFS ocf:heartbeat:Filesystem device="192.xx.xx.xx:/mysqldata" directory="/var/lib/mysql" fstype="nfs" options="-o username=your_name,password=your_password" op start timeout=60s op stop timeout=60s op monitor interval=20s timeout=60s
+
+# iscsi
+$ pcs resource create WebData ocf:heartbeat:iscsi portal="ip.xx.xx.xx" target="iqn.2008-08.com.starwindsoftware:" op monitor depth="0" timeout="30" interval="120"
+
+Resource group
+***************
+$  pcs resource group add group_name resource_01 resource_02 ...
+$  pcs resource group remove group_name resource_01 resource_02 ...
+
+# resource1 run on the same machine as resource2
+$ pcs constraint colocation add myresource1 with myresource2 score=INFINITY
+# myresource1 cannot run on the same machine as myresource2
+$ pcs constraint colocation add myresource1 with myresource2 score=-INFINITY
+# Remove colocation constraints
+$  pcs constraint colocation remove <source resource id> <target resource id>
+
+# Resource priorities
+$ pcs constraint order resource1 then resource2
+$ pcs constraint order remove  resource1
+
+# Node priorities, the resource prefers run on ServerA , the resource could fail over to ServerB
+$ pcs constraint location resource_id prefers ServerA=200
+$ pcs constraint location resource_id prefers ServerB=0
+
+# List all current location, order and colocation constraints
+$ pcs constraint --full
+
+Backup/Restore config
+**********************	
+
+# exprot config
+$ pcs cluster cib filename
+
+# import config
+$ pcs cluster cib-push filename
+
+Show config
+************	
+
+$ pcs config show
+$ pcs stonith show stonith-name
+$ pcs resource show resource-name
+
+get default value
+*****************	
+
+$ pcs resource defaults
+
+$ pcs resource defaults migration-threshold=5
+$ pcs resource defaults failure-timeout=240s
+
+# not switch resource
+$ pcs resource defaults resource-stickiness=100
+
+# resource timeout
+$ pcs resource op defaults timeout=240s
+
+$ pcs property set stonith-action=reboot
+
+# delete
+$ pcs resource defaults timeouts=
+
+Switch and delete resource
+***************************
+
+$ pcs resource move resource_name HostnameB
+$ pcs resource delete resource_name
+
+Get status
+**********	
+
+$ pcs status  	
+$ pcs status cluster
+$ pcs status corosync
+$ pcs cluster stop [nodename]  
+$ pcs cluster start --all
+$ pcs cluster standby nodename
+
+Clean info
+**********
+
+# clean all error messages and error counts
+$ pcs resource cleanup resource_id
+$ pcs stonith cleanup fence_name
+
+clear all pacemaker config
+***************************
+
+$ rm -f /var/lib/pacemaker/cib/*
+$ systemctl stop pacemaker
+$ systemctl stop corosync
+$ systemctl start corosync
+$ systemctl start pacemaker
+
+corosync
+*********
+
+$ corosync-cfgtool -s  
+Printing ring status.
+Local node ID 2
+RING ID 0
+	id	= 10.xx.xx.xx
+	status	= ring 0 active with no faults
+RING ID 1
+	id	= 172.xx.xx.xx
+	status	= ring 1 active with no faults
+
+
+$ corosync-quorumtool -siH
+Quorum information
+------------------
+Date:             Tue Mar 22 04:07:15 2016
+Quorum provider:  corosync_votequorum
+Nodes:            3
+Node ID:          0x00000002
+Ring ID:          656
+Quorate:          Yes
+
+Votequorum information
+----------------------
+Expected votes:   3
+Highest expected: 3
+Total votes:      3
+Quorum:           2
+Flags:            Quorate 
+
+Membership information
+----------------------
+    Nodeid      Votes Name
+0x00000001          1 10.x.x.x
+0x00000003          1 10.x.x.x
+0x00000002          1 10.x.x.x (local)
+
+3 x CentOS 7 corosync.conf
+***************************	
+
+totem {
+    version: 2
+    secauth: off
+    rrp_mode:active
+    cluster_name: ha-kvm
+    transport: udpu
+    token: 17000
+}
+
+nodelist {
+  node {
+        ring0_addr: nic0.serverA.xx.xx
+        ring1_addr: nic1.serverA.xx.xx
+        nodeid: 1
+       }
+  node {
+        ring0_addr: nic0.serverB.xx.xx
+        ring1_addr: nic1.serverB.xx.xx
+        nodeid: 2
+       }
+  node {
+        ring0_addr: nic0.serverC.xx.xx
+        ring1_addr: nic1.serverC.xx.xx
+        nodeid: 3
+       }
+}
+
+quorum {
+    provider: corosync_votequorum
+    expected_votes: 3
+}
+
+logging {
+        fileline: off
+        to_logfile: yes
+        to_syslog: yes
+        logfile: /var/log/cluster/corosync.log
+        timestamp: on
+}
+
+2 x CentOS6 corosync.conf
+**************************
+	
+
+# Please read the corosync.conf.5 manual page
+compatibility: xxxx
+
+totem {
+	version: 2
+	secauth: off
+	interface {
+		member {
+			memberaddr: nic0.serverA.xx.xx
+		}
+		member {
+			memberaddr: nic0.serverB.xx.xx
+		}
+		ringnumber: 0
+		bindnetaddr: nic0.xx.xx.xx
+		mcastport: 5406
+		ttl: 1
+	}
+	interface {
+                member {
+                        memberaddr: nic1.serverA.xx.xx
+                }
+                member {
+                        memberaddr: nic1.serverB.xx.xx
+                }
+                ringnumber: 1
+                bindnetaddr: nic1.xx.xx.xx
+                mcastport: 5406
+                ttl: 1
+        }
+
+	transport: udpu
+	token: 17000
+	rrp_mode: passive
+}
+
+logging {
+	fileline: off
+	to_logfile: yes
+	to_syslog: yes
+	debug: on
+	logfile: /var/log/cluster/corosync.log
+	debug: off
+	timestamp: on
+	logger_subsys {
+		subsys: AMF
+		debug: off
+	}
+}
+
+config reference
+*****************
+
+https://qiita.com/tukiyo3/items/3f8b99be73798df857fd
