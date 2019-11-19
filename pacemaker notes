@@ -123,6 +123,11 @@ $ pcs status corosync
 $ pcs cluster stop [nodename]  
 $ pcs cluster start --all
 $ pcs cluster standby nodename
+# pcs resource show
+# pcs resource show —full
+# pcs constraint
+# pcs constraint —full
+
 
 Clean info
 **********
